@@ -1,6 +1,7 @@
 use crate::{BackendRef, ParentRef, RouteRef};
 use linkerd_app_core::{metrics::prom, svc};
 use linkerd_http_prom::{
+    body_data::NewRecordBodyData,
     record_response::{self, NewResponseDuration, StreamLabel},
     NewCountRequests, RequestCount, RequestCountFamilies,
 };
@@ -47,9 +48,11 @@ where
     } = metrics.clone();
     svc::layer::mk(move |inner| {
         use svc::Layer;
-        NewCountRequests::layer_via(ExtractRequestCount(requests.clone())).layer(
-            NewRecordDuration::layer_via(ExtractRecordDurationParams(responses.clone()))
-                .layer(inner),
+        NewRecordBodyData::layer_via().layer(
+            NewCountRequests::layer_via(ExtractRequestCount(requests.clone())).layer(
+                NewRecordDuration::layer_via(ExtractRecordDurationParams(responses.clone()))
+                    .layer(inner),
+            ),
         )
     })
 }
