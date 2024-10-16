@@ -116,6 +116,43 @@ async fn http_request_statuses() {
     assert_eq!(mixed.get(), 1);
 }
 
+// DEV(kate);
+#[allow(unused)]
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn body_data_layer_records_frames() {
+    use linkerd_app_core::proxy::http;
+    use tower::{Service, ServiceExt};
+
+    let _trace = linkerd_tracing::test::trace_init();
+
+    let metrics = super::RouteBackendMetrics::default();
+    let parent_ref = crate::ParentRef(policy::Meta::new_default("parent"));
+    let route_ref = crate::RouteRef(policy::Meta::new_default("route"));
+    let backend_ref = crate::BackendRef(policy::Meta::new_default("backend"));
+
+    let (mut svc, mut handle) =
+        mock_http_route_backend_metrics(&metrics, &parent_ref, &route_ref, &backend_ref);
+    handle.allow(1);
+
+    // Create a request whose body is backed by a channel that we can send chunks to.
+    let (req, req_tx) = {
+        let (tx, body) = hyper::Body::channel();
+        let body = BoxBody::new(body);
+        let req = http::Request::builder().body(body).unwrap();
+        (req, tx)
+    };
+
+    // Call the service once it is ready to accept a request.
+    svc.ready().await.expect("ready");
+    let mut call = svc.call(req);
+    let (req, send_resp) = handle.next_request().await.unwrap();
+
+    // Check that we have send 0 chunks, and 0 bytes in total.
+    let counter = metrics.body_data;
+
+    panic!("todo");
+}
+
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn grpc_request_statuses_ok() {
     let _trace = linkerd_tracing::test::trace_init();
@@ -279,6 +316,7 @@ async fn grpc_request_statuses_error_body() {
 
 // === Util ===
 
+// DEV(kate); route backend mock
 fn mock_http_route_backend_metrics(
     metrics: &RouteBackendMetrics<LabelHttpRouteBackendRsp>,
     parent_ref: &crate::ParentRef,

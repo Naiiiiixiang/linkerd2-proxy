@@ -1,7 +1,7 @@
 use crate::{BackendRef, ParentRef, RouteRef};
 use linkerd_app_core::{metrics::prom, svc};
 use linkerd_http_prom::{
-    body_data::NewRecordBodyData,
+    body_data::{self, BodyDataMetrics, NewRecordBodyData},
     record_response::{self, NewResponseDuration, StreamLabel},
     NewCountRequests, RequestCount, RequestCountFamilies,
 };
@@ -12,10 +12,12 @@ pub use linkerd_http_prom::record_response::MkStreamLabel;
 #[cfg(test)]
 mod tests;
 
+// DEV(kate); adding a new group of body data metrics here!
 #[derive(Debug)]
 pub struct RouteBackendMetrics<L: StreamLabel> {
     requests: RequestCountFamilies<labels::RouteBackend>,
     responses: ResponseMetrics<L>,
+    body_data: BodyDataMetrics,
 }
 
 type ResponseMetrics<L> = record_response::ResponseMetrics<
@@ -27,14 +29,24 @@ pub fn layer<T, N>(
     metrics: &RouteBackendMetrics<T::StreamLabel>,
 ) -> impl svc::Layer<
     N,
-    Service = NewCountRequests<
-        ExtractRequestCount,
-        NewResponseDuration<T, ExtractRecordDurationParams<ResponseMetrics<T::StreamLabel>>, N>,
+    Service = NewRecordBodyData<
+        ExtractRecordBodyDataParams,
+        NewCountRequests<
+            ExtractRequestCount,
+            NewResponseDuration<T, ExtractRecordDurationParams<ResponseMetrics<T::StreamLabel>>, N>,
+        >,
     >,
 > + Clone
 where
     T: MkStreamLabel,
     N: svc::NewService<T>,
+    NewRecordBodyData<
+        ExtractRecordBodyDataParams,
+        NewCountRequests<
+            ExtractRequestCount,
+            NewResponseDuration<T, ExtractRecordDurationParams<ResponseMetrics<T::StreamLabel>>, N>,
+        >,
+    >: svc::NewService<T>,
     NewCountRequests<
         ExtractRequestCount,
         NewResponseDuration<T, ExtractRecordDurationParams<ResponseMetrics<T::StreamLabel>>, N>,
@@ -42,13 +54,15 @@ where
     NewResponseDuration<T, ExtractRecordDurationParams<ResponseMetrics<T::StreamLabel>>, N>:
         svc::NewService<T>,
 {
+    // DEV(kate); this is where we wire the new body data layer into the backend metric stack.
     let RouteBackendMetrics {
         requests,
         responses,
+        body_data,
     } = metrics.clone();
     svc::layer::mk(move |inner| {
         use svc::Layer;
-        NewRecordBodyData::layer_via().layer(
+        NewRecordBodyData::layer_via(ExtractRecordBodyDataParams(body_data.clone())).layer(
             NewCountRequests::layer_via(ExtractRequestCount(requests.clone())).layer(
                 NewRecordDuration::layer_via(ExtractRecordDurationParams(responses.clone()))
                     .layer(inner),
@@ -60,15 +74,20 @@ where
 #[derive(Clone, Debug)]
 pub struct ExtractRequestCount(RequestCountFamilies<labels::RouteBackend>);
 
+#[derive(Clone, Debug)]
+pub struct ExtractRecordBodyDataParams(BodyDataMetrics /*DEV(kate): add labels*/);
+
 // === impl RouteBackendMetrics ===
 
 impl<L: StreamLabel> RouteBackendMetrics<L> {
     pub fn register(reg: &mut prom::Registry, histo: impl IntoIterator<Item = f64>) -> Self {
         let requests = RequestCountFamilies::register(reg);
         let responses = record_response::ResponseMetrics::register(reg, histo);
+        let body_data = body_data::BodyDataMetrics::register(reg);
         Self {
             requests,
             responses,
+            body_data,
         }
     }
 
@@ -93,6 +112,7 @@ impl<L: StreamLabel> Default for RouteBackendMetrics<L> {
         Self {
             requests: Default::default(),
             responses: Default::default(),
+            body_data: Default::default(),
         }
     }
 }
@@ -102,6 +122,7 @@ impl<L: StreamLabel> Clone for RouteBackendMetrics<L> {
         Self {
             requests: self.requests.clone(),
             responses: self.responses.clone(),
+            body_data: self.body_data.clone(),
         }
     }
 }
